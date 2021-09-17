@@ -1,4 +1,5 @@
 import boto3
+# import csv
 import pandas as pd
 from urllib.parse import urlparse, parse_qs
 from datetime import datetime
@@ -6,13 +7,21 @@ import io
 
 print("starting the process")
 
-#  file = '../sourceData/data.tsv'
+# file = '../sourceData/data.tsv'
 output_file = 'processed/' + datetime.today().strftime('%Y-%m-%d') + '_SearchKeywordPerformance.tsv'
 bucket_name = 'testbucket'
-file_name = 'data/data.tsv'
+input_file_name = 'data/data.tsv'
 
 
 def write_to_s3(client, df, bucket, output_key):
+    """
+    
+    :param client: s3 client for connection 
+    :param df: dataframe to be published to s3 
+    :param bucket: destination bucket 
+    :param output_key: file name and key 
+    :return: nothing
+    """
     with io.StringIO() as csv_buffer:
         df.to_csv(csv_buffer, index=False, sep ='\t')
         response = client.put_object(
@@ -27,10 +36,14 @@ def write_to_s3(client, df, bucket, output_key):
 
 
 def archive_file():
-    print("I am woring on it")
+    print("I am working on it")
 
 
 def connection_to_s3():
+    """
+    :return: s3 client for connection 
+    :input: nothing for now, but if it a cross account need AWS access ket and secret key
+    """
     s3_client = boto3.client(
         "s3"
         # , aws_access_key_id=AWS_ACCESS_KEY_ID
@@ -42,20 +55,24 @@ def connection_to_s3():
 
 def read_from_s3(s3_client, source_bucket, key_with_file_name):
     """
-    :return: Object for s3 file
-    :input: s3_client, Bucket name and key
+    
+    :param s3_client: s3 client for connection 
+    :param source_bucket: source bucket with data
+    :param key_with_file_name: file to be read
+    :return:  dataframe
     """
+
     response = s3_client.get_object(Bucket=source_bucket, Key=key_with_file_name)
     print("i am printing response")
     print(response)
     status = response.get("ResponseMetadata", {}).get("HTTPStatusCode")
     if status == 200:
         print(f"Successful S3 get_object response. Status - {status}")
+        # read data into dataframe
         df = pd.read_csv(response.get("Body"), sep='\t')
         return df
     else:
         print(f"Unsuccessful S3 get_object response. Status - {status}")
-
 
 
 class ProcessData:
@@ -71,30 +88,32 @@ class ProcessData:
 
     def transform_data(df):
         """
-
-        Responsible to process the file
-        :return nothing
-        :write processed file for S3 bucket
-        :Input - File location from S3
-
+        :param df: dataframe to be transformed 
+        :return: 
         """
-        # df = pd.read_csv(file, sep='\t')
+
+        # df = pd.read_csv(df, sep='\t')
+        # List to store the extracted data
         domain = []
         keywords = []
         is_external_flag = []
+        # Loop all rows in dataframe
         for index, row in df.iterrows():
             k = []
-            external_domain = urlparse(row['referrer']).netloc
+            # parse the URL
             parsed = urlparse(row['referrer'])
+            # gives URL - like www.google.com
+            referral_domain = parsed.netloc
+            # gives the query parameters in the URL
             params = parse_qs(parsed.query)
+            # for Internal search, we need to check the query parameters from page_url column
             internal_search_parsed = urlparse(row['page_url'])
-            # internal_domain = urlparse(row['page_url']).netloc
+            # gives the query parameters in the URL
             internal_search_params = parse_qs(internal_search_parsed.query)
-            # print(external_domain)
             is_external = 'Yes'
-            if external_domain in ['www.google.com', 'www.bing.com']:
+            if referral_domain in ['www.google.com', 'www.bing.com']:
                 k = params['q'][0]
-            elif external_domain in ['search.yahoo.com']:
+            elif referral_domain in ['search.yahoo.com']:
                 k = params['p'][0]
             else:
                 is_external = 'No'
@@ -104,13 +123,15 @@ class ProcessData:
                     k = internal_search_params['k'][0]
                 else:
                     k = 'No Keyword'
+            # append the data to the default list
             keywords.append(k)
-            domain.append(external_domain)
+            domain.append(referral_domain)
             is_external_flag.append(is_external)
-        # the below code works
+        # Extend the dataframe and add calculated columns
         df['external_domain'] = domain
         df['is_external'] = is_external_flag
         df['keywords'] = keywords
+        # split the product list column in five other columns
         df[['category'
             , 'product_Name'
             , 'number_of_items'
@@ -121,27 +142,29 @@ class ProcessData:
         df['total_revenue'] = df['total_revenue'].replace(r'^\s*$', 0, regex=True)
         # updates nan with 0
         df['total_revenue'] = df.total_revenue.fillna(0)
-        # print(df)
-        # df.to_csv(output, sep='\t')
         return df
 
+
     def generate_report(df):
+        """
+        :param df: dataframe
+        :return: query result to be written to S3
+        """
+    
         df['keywords'] = df['keywords'].str.lower()
-        final_op = df.query('is_external=="Yes"')\
-        .groupby(['external_domain', 'keywords'])['total_revenue']\
-        .sum()\
-        .reset_index()\
-        .sort_values(by='total_revenue', ascending=False)
-        # print(final_op)
-        return final_op
-        
+        df_to_report = df.query('is_external=="Yes"')\
+            .groupby(['external_domain', 'keywords'])['total_revenue']\
+            .sum()\
+            .reset_index()\
+            .sort_values(by='total_revenue', ascending=False)
+        return df_to_report
 
 
 def main():
     print("In main and Starting Execution")
     s3_client = connection_to_s3()
     print("connection successful")
-    df = read_from_s3(s3_client, bucket_name, file_name)
+    df = read_from_s3(s3_client, bucket_name, input_file_name)
     # x = ProcessData
     processed_data = ProcessData.transform_data(df)
     report = ProcessData.generate_report(processed_data)
