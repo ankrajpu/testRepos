@@ -1,5 +1,3 @@
-import json
-import urllib.parse
 import boto3
 
 print('Loading function')
